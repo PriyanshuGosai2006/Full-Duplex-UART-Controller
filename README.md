@@ -1,39 +1,61 @@
-# SystemVerilog Full-Duplex UART Controller
+# AMBA AXI4-Stream Full-Duplex UART Core
 
-## Overview
-A synthesizable, full-duplex Universal Asynchronous Receiver-Transmitter (UART) IP core written in SystemVerilog. The design uses 16x oversampling and double-flop metastability synchronization to reliably sample asynchronous serial data into a 100 MHz synchronous clock domain.
-* Schematic :
- <img width="1918" height="901" alt="image" src="https://github.com/user-attachments/assets/5c1db4ea-5f1d-40ac-9a84-e7fecbe87d4e" />
+## Architecture Overview
+A cycle-accurate, synthesizable Universal Asynchronous Receiver-Transmitter (UART) IP core. This repository demonstrates the architectural evolution from a raw physical layer communication core into a standard AMBA AXI4-Stream System-on-Chip (SoC) peripheral using First-Word Fall-Through (FWFT) synchronous FIFOs.
+
+The core utilizes a **16x oversampling technique** for robust center-eye data recovery and a **double-flop synchronizer** to safely cross physical asynchronous RX signals into the 100 MHz synchronous domain, preventing metastability.
+
+## Architectural Evolution & Performance Comparison
+This repository contains two instantiable top-level modules, allowing integrators to balance area overhead versus protocol compliance. The addition of the AMBA AXI4-Stream wrappers and FIFOs (Phase 2) introduced hardware backpressure and effectively pipelined the I/O boundaries, resulting in improved timing closure at the cost of additional memory utilization.
+
+| Metric | Base Core (`uart_top.sv`) | AXI-Stream Core (`uart_axis_top.sv`) |
+| :--- | :--- | :--- |
+| **Interface** | Raw TX/RX | AMBA AXI4-Stream |
+| **Buffering** | 1-Byte internal register | 16-Byte FWFT Synchronous FIFOs |
+| **Data Protection** | None (Overwrites on collision) | Strict Hardware Backpressure (`tready`) |
+| **Target Clock** | 100 MHz | 100 MHz |
+| **WNS (Timing)** | +5.962 ns | +7.242 ns |
+
+## Repository Structure
+This IP is architected to industry standards, strictly separating physical design from verification and synthesis artifacts.
+* `/RTL`: Synthesizable SystemVerilog source files (Core logic, FIFOs, AXI wrappers).
+* `/TESTBENCH`: Self-checking verification testbenches.
+* `/DOCS`: Physical timing constraints (`.xdc`), architectural schematics, and verification waveforms.
+
+---
+
+## Phase 1: Base Core Verification & Synthesis
+The base `uart_top` module implements raw TX and RX state machines. Verified via a full-duplex loopback stress test in Questa. 
+
+*(Phase 1: Cycle-Accurate Loopback Verification)*
+<img width="1290" height="552" alt="phase_1_waveform" src="https://github.com/user-attachments/assets/f4482860-33be-4e65-92d6-37fcf5f989a8" />
+
+> **Validation Analysis:** The waveform demonstrates a successful physical serial loopback. The RX module utilizes a 16x oversampling counter (`clk_count`) to sample the center of the data eye. The state machine successfully tracks the `bit_index` to reconstruct the transmitted bytes (e.g., `03`, `0b`, `2b`) from the raw serial line without data corruption.
+
+Synthesized targeting the Xilinx Artix-7 (`xc7a35tcpg236-1`). 
+*(Phase 1: Physical Timing Closure at 100 MHz)*
+<img width="1032" height="261" alt="phase_1_timing" src="https://github.com/user-attachments/assets/ce10428b-31ef-4314-8059-96e5d2ef55c3" />
 
 
-## Technical Specifications
-* **Protocol:** 8-N-1 (8 Data Bits, No Parity, 1 Stop Bit)
-* **Baud Rate:** Parameterized (Default: 9600 bps)
-* **Clocking:** Single 100 MHz clock domain (cycle-accurate, zero gated clocks)
-* **Design Pattern:** Interface-based architecture (`uart_if.sv`) to cleanly abstract hardware data buses.
-  
+---
 
-## Verification
-Verified via a self-checking testbench in ModelSim/Questa. The testbench drives a physical loopback (TX tied to RX) to validate simultaneous full-duplex transmission and reception.
+## Phase 2: AXI4-Stream Validation & Synthesis
+The top-level `uart_axis_top` wrapper provides hardware-level backpressure (`TVALID`/`TREADY` handshaking) to prevent data loss under high-stress system loads.
 
-<img width="1290" height="552" alt="waveform" src="https://github.com/user-attachments/assets/1712d559-5b83-420e-b4b0-adbf087f43be" />
-<img width="725" height="157" alt="image" src="https://github.com/user-attachments/assets/d652a417-2c6a-4c32-b7e5-cfce264105a1" />
+### Backpressure Verification
+Verified via a strict self-checking testbench (`uart_axis_tb.sv`). The verification environment artificially restricts the TX FIFO depth to 4 to force an overflow condition. 
 
+*(Phase 2: AXI4-Stream Backpressure Stall Verification)*
+<img width="1281" height="678" alt="phase2_waveform" src="https://github.com/user-attachments/assets/f9993ca3-52a5-4d03-8e6a-2fc04ebcb16d" />
 
+> **Validation Analysis:** This physical capture proves the AXI4-Stream backpressure logic. When the internal memory array reaches maximum occupancy (`count` hits 4), the hardware immediately pulls `s_axis_tready` low. The upstream testbench is successfully stalled, preventing byte `f6` from overwriting the buffer. The stall is held cycle-accurately until the UART transmits a byte and frees a memory slot (`count` drops to 3).
 
-## Synthesis & Timing
-Synthesized using AMD Vivado targeting the Xilinx Artix-7 (`xc7a35tcpg236-1`). 
+### Hardware Schematic & Pipelined Timing Closure
+The addition of I/O boundary FIFOs effectively pipelined the design, isolating the core state machines from external pin delays and yielding a highly optimized routing path.
 
-* **Clock Constraint:** 100 MHz (10.000 ns period)
-* **Setup/Hold Violations:** None
-* **Worst Negative Slack (WNS):** +5.962 ns
-* Slice LUTS : 60
-* Slice Registers : 59
-* Synthesis & Resource Utilization (Flattened post-synthesis schematic proving physical translation to Artix-7 LUTs and Registers):
- <img width="1910" height="392" alt="image" src="https://github.com/user-attachments/assets/d6232de3-fb2b-4c4a-9866-a1e565f4a8bf" />
+*(Phase 2: Physical Timing Closure at 100 MHz)*
+<img width="1075" height="230" alt="phase2_timing" src="https://github.com/user-attachments/assets/72bf8771-6636-4c14-af14-966f2caca440" />
 
 
-  
-
-<img width="1032" height="261" alt="timing&#39;" src="https://github.com/user-attachments/assets/32fe623f-0da1-4f5f-a44c-03451b3c6892" />
-
+*(Phase 2: Vivado Synthesized Hardware Schematic)*
+<img width="1920" height="887" alt="newfullsche" src="https://github.com/user-attachments/assets/e2990c40-e4a7-464f-becf-e394b8eef2e7" />
